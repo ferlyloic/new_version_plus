@@ -1,61 +1,13 @@
-library new_version_plus;
-
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:new_version_plus/model/version_status.dart';
+import 'package:new_version_plus/strategies/version_source.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-
-/// Information about the app's current version, and the most recent version
-/// available in the Apple App Store or Google Play Store.
-class VersionStatus {
-  /// The current version of the app.
-  final String localVersion;
-
-  /// The most recent version of the app in the store.
-  final String storeVersion;
-
-  /// The most recent version of the app in the store.
-  final String? originalStoreVersion;
-
-  /// A link to the app store page where the app can be updated.
-  final String appStoreLink;
-
-  /// The release notes for the store version of the app.
-  final String? releaseNotes;
-
-  /// Returns `true` if the store version of the application is greater than the local version.
-  bool get canUpdate {
-    final local = localVersion.split('.').map(int.parse).toList();
-    final store = storeVersion.split('.').map(int.parse).toList();
-
-    // Each consecutive field in the version notation is less significant than the previous one,
-    // therefore only one comparison needs to yield `true` for it to be determined that the store
-    // version is greater than the local version.
-    for (var i = 0; i < store.length; i++) {
-      // The store version field is newer than the local version.
-      if (store[i] > local[i]) {
-        return true;
-      }
-
-      // The local version field is newer than the store version.
-      if (local[i] > store[i]) {
-        return false;
-      }
-    }
-
-    // The local and store versions are the same.
-    return false;
-  }
-
-  //Public Contructor
-  VersionStatus({required this.localVersion, required this.storeVersion, required this.appStoreLink, this.releaseNotes, this.originalStoreVersion});
-
-  VersionStatus._({required this.localVersion, required this.storeVersion, required this.appStoreLink, this.releaseNotes, this.originalStoreVersion});
-}
 
 class NewVersionPlus {
   /// An optional value that can override the default packageName when
@@ -89,16 +41,34 @@ class NewVersionPlus {
   //Html original body request
   final bool androidHtmlReleaseNotes;
 
-  NewVersionPlus({this.androidId, this.iOSId, this.iOSAppStoreCountry, this.forceAppVersion, this.androidPlayStoreCountry, this.androidHtmlReleaseNotes = false});
+  final VersionSource? versionSource;
+
+  NewVersionPlus({
+    this.androidId,
+    this.iOSId,
+    this.iOSAppStoreCountry,
+    this.forceAppVersion,
+    this.androidPlayStoreCountry,
+    this.androidHtmlReleaseNotes = false,
+    this.versionSource,
+  });
 
   /// This checks the version status, then displays a platform-specific alert
   /// with buttons to dismiss the update alert, or go to the app store.
-  showAlertIfNecessary({required BuildContext context, LaunchModeVersion launchModeVersion = LaunchModeVersion.normal}) async {
+  showAlertIfNecessary({
+    required BuildContext context,
+    LaunchModeVersion launchModeVersion = LaunchModeVersion.normal,
+  }) async {
     final VersionStatus? versionStatus = await getVersionStatus();
 
     if (versionStatus != null && versionStatus.canUpdate) {
-      // ignore: use_build_context_synchronously
-      showUpdateDialog(context: context, versionStatus: versionStatus, launchModeVersion: launchModeVersion);
+      if (context.mounted) {
+        showUpdateDialog(
+          context: context,
+          versionStatus: versionStatus,
+          launchModeVersion: launchModeVersion,
+        );
+      }
     }
   }
 
@@ -107,19 +77,27 @@ class NewVersionPlus {
   /// way.
   Future<VersionStatus?> getVersionStatus() async {
     PackageInfo packageInfo = await PackageInfo.fromPlatform();
+
+    if (versionSource != null) {
+      return versionSource!.checkVersion(packageInfo);
+    }
+
     if (Platform.isIOS) {
       return _getiOSStoreVersion(packageInfo);
     } else if (Platform.isAndroid) {
       return _getAndroidStoreVersion(packageInfo);
     } else {
-      debugPrint('The target platform "${Platform.operatingSystem}" is not yet supported by this package.');
+      debugPrint(
+        'The target platform "${Platform.operatingSystem}" is not yet supported by this package.',
+      );
       return null;
     }
   }
 
   /// This function attempts to clean local version strings so they match the MAJOR.MINOR.PATCH
   /// versioning pattern, so they can be properly compared with the store version.
-  String _getCleanVersion(String version) => RegExp(r'\d+(\.\d+)?(\.\d+)?').stringMatch(version) ?? '0.0.0';
+  String _getCleanVersion(String version) =>
+      RegExp(r'\d+(\.\d+)?(\.\d+)?').stringMatch(version) ?? '0.0.0';
   // RegExp(r'\d+\.\d+(\.\d+)?').stringMatch(version) ?? '0.0.0';
   //RegExp(r'\d+\.\d+(\.[a-z]+)?(\.([^"]|\\")*)?').stringMatch(version) ?? '0.0.0'; \d+(\.\d+)?(\.\d+)?
 
@@ -163,7 +141,7 @@ class NewVersionPlus {
       debugPrint('Can\'t find an app in the App Store with the id: $id');
       return null;
     }
-    return VersionStatus._(
+    return VersionStatus(
       localVersion: _getCleanVersion(packageInfo.version),
       storeVersion: _getCleanVersion(forceAppVersion ?? jsonObj['results'][0]['version']),
       originalStoreVersion: forceAppVersion ?? jsonObj['results'][0]['version'],
@@ -204,25 +182,36 @@ class NewVersionPlus {
     //Release
     final regexpRelease = RegExp(r'\[(null,)\[(null,)\"((\.[a-z]+)?(([^"]|\\")*)?)\"\]\]');
 
-    final expRemoveSc = RegExp(r"\\u003c[A-Za-z]{1,10}\\u003e", multiLine: true, caseSensitive: true);
+    final expRemoveSc = RegExp(
+      r"\\u003c[A-Za-z]{1,10}\\u003e",
+      multiLine: true,
+      caseSensitive: true,
+    );
 
     final expRemoveQuote = RegExp(r"\\u0026quot;", multiLine: true, caseSensitive: true);
 
     final releaseNotes = regexpRelease.firstMatch(response.body)?.group(3);
     //final descriptionNotes = regexpDescription.firstMatch(response.body)?.group(2);
 
-    return VersionStatus._(
+    return VersionStatus(
       localVersion: _getCleanVersion(packageInfo.version),
       storeVersion: _getCleanVersion(forceAppVersion ?? storeVersion ?? ""),
       originalStoreVersion: forceAppVersion ?? storeVersion ?? "",
       appStoreLink: uri.toString(),
-      releaseNotes: androidHtmlReleaseNotes ? _parseUnicodeToString(releaseNotes) : releaseNotes?.replaceAll(expRemoveSc, '').replaceAll(expRemoveQuote, '"'),
+      releaseNotes: androidHtmlReleaseNotes
+          ? _parseUnicodeToString(releaseNotes)
+          : releaseNotes?.replaceAll(expRemoveSc, '').replaceAll(expRemoveQuote, '"'),
     );
   }
 
   /// Update action fun
   /// show modal
-  void _updateActionFunc({required String appStoreLink, required bool allowDismissal, required BuildContext context, LaunchMode launchMode = LaunchMode.platformDefault}) {
+  void _updateActionFunc({
+    required String appStoreLink,
+    required bool allowDismissal,
+    required BuildContext context,
+    LaunchMode launchMode = LaunchMode.platformDefault,
+  }) {
     launchAppStore(appStoreLink, launchMode: launchMode);
     if (allowDismissal) {
       Navigator.of(context, rootNavigator: true).pop();
@@ -247,20 +236,35 @@ class NewVersionPlus {
     LaunchModeVersion launchModeVersion = LaunchModeVersion.normal,
   }) async {
     final dialogTitleWidget = Text(dialogTitle);
-    final dialogTextWidget = Text(dialogText ?? 'You can now update this app from ${versionStatus.localVersion} to ${versionStatus.storeVersion}');
+    final dialogTextWidget = Text(
+      dialogText ??
+          'You can now update this app from ${versionStatus.localVersion} to ${versionStatus.storeVersion}',
+    );
 
-    final launchMode = launchModeVersion == LaunchModeVersion.external ? LaunchMode.externalApplication : LaunchMode.platformDefault;
+    final launchMode = launchModeVersion == LaunchModeVersion.external
+        ? LaunchMode.externalApplication
+        : LaunchMode.platformDefault;
 
     final updateButtonTextWidget = Text(updateButtonText);
 
     List<Widget> actions = [
       Platform.isAndroid
           ? TextButton(
-              onPressed: () => _updateActionFunc(allowDismissal: allowDismissal, context: context, appStoreLink: versionStatus.appStoreLink, launchMode: launchMode),
+              onPressed: () => _updateActionFunc(
+                allowDismissal: allowDismissal,
+                context: context,
+                appStoreLink: versionStatus.appStoreLink,
+                launchMode: launchMode,
+              ),
               child: updateButtonTextWidget,
             )
           : CupertinoDialogAction(
-              onPressed: () => _updateActionFunc(allowDismissal: allowDismissal, context: context, appStoreLink: versionStatus.appStoreLink, launchMode: launchMode),
+              onPressed: () => _updateActionFunc(
+                allowDismissal: allowDismissal,
+                context: context,
+                appStoreLink: versionStatus.appStoreLink,
+                launchMode: launchMode,
+              ),
               child: updateButtonTextWidget,
             ),
     ];
@@ -269,7 +273,9 @@ class NewVersionPlus {
       final dismissButtonTextWidget = Text(dismissButtonText);
       dismissAction = dismissAction ?? () => Navigator.of(context, rootNavigator: true).pop();
       actions.add(
-        Platform.isAndroid ? TextButton(onPressed: dismissAction, child: dismissButtonTextWidget) : CupertinoDialogAction(onPressed: dismissAction, child: dismissButtonTextWidget),
+        Platform.isAndroid
+            ? TextButton(onPressed: dismissAction, child: dismissButtonTextWidget)
+            : CupertinoDialogAction(onPressed: dismissAction, child: dismissButtonTextWidget),
       );
     }
 
@@ -281,14 +287,21 @@ class NewVersionPlus {
           canPop: allowDismissal,
           child: Platform.isAndroid
               ? AlertDialog(title: dialogTitleWidget, content: dialogTextWidget, actions: actions)
-              : CupertinoAlertDialog(title: dialogTitleWidget, content: dialogTextWidget, actions: actions),
+              : CupertinoAlertDialog(
+                  title: dialogTitleWidget,
+                  content: dialogTextWidget,
+                  actions: actions,
+                ),
         );
       },
     );
   }
 
   /// Launches the Apple App Store or Google Play Store page for the app.
-  Future<void> launchAppStore(String appStoreLink, {LaunchMode launchMode = LaunchMode.platformDefault}) async {
+  Future<void> launchAppStore(
+    String appStoreLink, {
+    LaunchMode launchMode = LaunchMode.platformDefault,
+  }) async {
     if (await canLaunchUrl(Uri.parse(appStoreLink))) {
       await launchUrl(Uri.parse(appStoreLink), mode: launchMode);
     } else {
